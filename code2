@@ -1,18 +1,44 @@
+from monetdb_connection import get_connection
 from pyspark.sql.functions import lit
 from functools import reduce
 
-merged_dfs = []
-for i, freq in enumerate(freqs):
-    db = freq.lower()  # e.g., 'tec_pos_cet'
-    table_name = freq.lower()  # e.g., 'tec_pos_cet'
+# Step 1: Connect to database and fetch frequencies for schema
+conn = get_connection()
+cursor = conn.cursor()
 
-    df = spark.table(f"prd_us_npd_{db}.hlx_wkly_fact_{table_name}")
-    df = df.withColumn("freq_key", lit(i))
+cursor.execute("""
+    SELECT freq 
+    FROM meta_table 
+    WHERE schema = 'TEC_POS_TOT'
+""")
+freq_rows = cursor.fetchall()  # e.g., [('TEC_POS_CET',), ('TEC_POS_COM',)]
+
+cursor.close()
+conn.close()
+
+# Step 2: Extract and normalize frequency list
+freqs = [row[0].strip() for row in freq_rows]  # ['TEC_POS_CET', 'TEC_POS_COM']
+
+# Step 3: Read from corresponding Spark tables and attach freq_key
+merged_dfs = []
+
+for idx, freq in enumerate(freqs):
+    db_name = freq.lower()  # 'tec_pos_cet'
+    table_name = freq.lower()  # 'tec_pos_cet'
+
+    print(f"Reading from: prd_us_npd_{db_name}.hlx_wkly_fact_{table_name}")
+
+    df = spark.table(f"prd_us_npd_{db_name}.hlx_wkly_fact_{table_name}")
+    df = df.withColumn("freq_key", lit(idx))
     merged_dfs.append(df)
 
-# Merge all dataframes and write final output
+# Step 4: Merge and write to final target
+output_table = "db.hlx_wkly_fact_tec_pos_tot"
+
 if len(merged_dfs) == 1:
-    merged_dfs[0].write.mode("overwrite").saveAsTable("db.hlx_wkly_fact_tec_pos_tot")
+    merged_dfs[0].write.mode("overwrite").saveAsTable(output_table)
 else:
-    merged_df = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), merged_dfs).distinct()
-    merged_df.write.mode("overwrite").saveAsTable("db.hlx_wkly_fact_tec_pos_tot")
+    final_df = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), merged_dfs).distinct()
+    final_df.write.mode("overwrite").saveAsTable(output_table)
+
+print(f"✅ Final table written to: {output_table}")
