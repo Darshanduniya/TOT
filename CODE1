@@ -1,0 +1,78 @@
+from collections import defaultdict
+from monetdb_connection import get_connection
+from functools import reduce
+
+# Initialize SparkSession externally as `spark` before running this script
+
+# --- Step 1: Fetch freq-table mapping and DB/PORT info from meta_table ---
+conn = get_connection()
+cursor = conn.cursor()
+
+cursor.execute("""
+    SELECT freq, table_list, DB_A, PORT_A, DB_B, PORT_B
+    FROM meta_table
+    WHERE schema = 'TEC_POS_TOT'
+""")
+meta_rows = cursor.fetchall()
+
+# --- Step 2: Build freq -> table list + DB info mappings ---
+freq_tables = {}
+db_info_map = {}
+freq_list = []
+
+for row in meta_rows:
+    freq, table_list, db_a, port_a, db_b, port_b = row
+    freq_list.append(freq)
+    tables = [tbl.strip() for tbl in table_list.split(',')]
+    freq_tables[freq] = tables
+    db_info_map[freq] = {'A': (db_a, port_a), 'B': (db_b, port_b)}
+
+# --- Step 3: Get stack info from latest_refresh ---
+placeholders = ','.join(['%s'] * len(freq_list))
+stack_query = f"""
+    SELECT industry, offline_mart
+    FROM latest_refresh
+    WHERE industry IN ({placeholders})
+"""
+cursor.execute(stack_query, freq_list)
+stack_data = cursor.fetchall()
+cursor.close()
+conn.close()
+
+# --- Step 4: Map freq to stack ---
+stack_map = {industry: stack for industry, stack in stack_data}
+
+# --- Step 5: Build table -> freqs reverse mapping ---
+table_to_freqs = defaultdict(list)
+for freq, tables in freq_tables.items():
+    for tbl in set(tables):
+        table_to_freqs[tbl].append(freq)
+
+# --- Step 6: Loop through each distinct table ---
+for table_name, freqs in table_to_freqs.items():
+    dfs = []
+    print(f"\nProcessing table: {table_name} from freqs: {freqs}")
+
+    for freq in freqs:
+        stack = stack_map.get(freq)
+        db, port = db_info_map[freq][stack]  # Lookup DB/PORT for that stack
+
+        print(f"  Reading from freq={freq}, stack={stack}, db={db}, port={port}")
+
+        df = spark.read.jdbc(
+            url=f"jdbc:monetdb://lnx2577.ch3.prod.i.com:{port}/{db}",
+            table=f'"{table_name}"',
+            properties={
+                "user": "USR_TKD_HLX_FRT_P",
+                "password": "abdcfg",
+                "driver": "org.monetdb.jdbc.MonetDriver"
+            }
+        )
+        dfs.append(df)
+
+    # --- Step 7: Merge and write ---
+    if len(dfs) == 1:
+        dfs[0].write.mode("overwrite").saveAsTable(f"db.{table_name}")
+    else:
+        merged_df = reduce(lambda x, y: x.unionByName(y, allowMissingColumns=True), dfs).distinct()
+        merged_df.write.mode("overwrite").saveAsTable(f"db.{table_name}")
