@@ -1,0 +1,18 @@
+from pyspark.sql.functions import lit
+from functools import reduce
+
+merged_dfs = []
+for i, freq in enumerate(freqs):
+    db = freq.lower()  # e.g., 'tec_pos_cet'
+    table_name = freq.lower()  # e.g., 'tec_pos_cet'
+
+    df = spark.table(f"prd_us_npd_{db}.hlx_wkly_fact_{table_name}")
+    df = df.withColumn("freq_key", lit(i))
+    merged_dfs.append(df)
+
+# Merge all dataframes and write final output
+if len(merged_dfs) == 1:
+    merged_dfs[0].write.mode("overwrite").saveAsTable("db.hlx_wkly_fact_tec_pos_tot")
+else:
+    merged_df = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), merged_dfs).distinct()
+    merged_df.write.mode("overwrite").saveAsTable("db.hlx_wkly_fact_tec_pos_tot")
