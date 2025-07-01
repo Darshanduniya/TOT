@@ -1,0 +1,50 @@
+import subprocess
+from pyspark.sql import SparkSession
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("ExportTables").enableHiveSupport().getOrCreate()
+
+# Your table list
+special_table = ['pos_item', 'raw_attr', 'dim_tec', 'fre_table']
+
+# Hive schema
+schema = "your_schema"  # <-- Replace with actual schema name
+
+for table_name in special_table:
+    # Construct HDFS output path
+    hdfs_path = f"/warehouse/tablespace/external/hive/{table_name}_tec_tot"
+    local_path = f"/nzda/tec/{table_name}_tec_tot"
+
+    # Step 1: Delete existing HDFS directory
+    try:
+        subprocess.run(["hdfs", "dfs", "-rm", "-r", hdfs_path], check=True, capture_output=True, text=True)
+        print(f"Deleted existing path: {hdfs_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Path might not exist or deletion failed for {hdfs_path}:")
+        print(e.stderr)
+
+    # Step 2: Read from Hive table
+    df = spark.table(f"{schema}.{table_name}")
+
+    # Step 3: Write to HDFS with conditionally adjusted options
+    writer = df.repartition(10 if table_name == 'pos_item' else 5) \
+        .write.option("header", False) \
+        .option("delimiter", "~") \
+        .mode("overwrite")
+
+    if table_name == 'pos_item':
+        writer = writer.option("quote", "\"").option("escape", "\"")
+
+    writer.csv(hdfs_path)
+    print(f"Written data to: {hdfs_path}")
+
+    # Step 4: Merge HDFS files into one local file
+    try:
+        subprocess.run(
+            ["hdfs", "dfs", "-getmerge", f"{hdfs_path}/*.csv", local_path],
+            check=True, capture_output=True, text=True
+        )
+        print(f"Data merged to local path: {local_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"getmerge failed for {table_name}:")
+        print(e.stderr)
