@@ -1,0 +1,21 @@
+1. LEAP-8644 – Build Generic DAG for Merging Multiple Industries
+Initially, we had hardcoded scripts and created an ad-hoc DAG to execute TEC_TOT, which is a combination of TEC_CET and TEC_TOT.
+
+This week, I developed a generic script and a generic DAG to handle this in a scalable manner.
+
+Successfully tested the end-to-end pipeline on the stage side within the Dev Airflow environment.
+
+2. LEAP-6550 – Create Dynamic fact_time_mapping
+Problem: Manual creation was required whenever a new industry was onboarded or an existing one had a calendar_id change.
+
+Solution: Integrated Aldrich inputs with Oracle DB to dynamically fetch calendar_id and generate fact_time_mapping.
+
+This component is now reusable across all dependent modules.
+
+Successfully tested for one industry in Dev Airflow; pending multi-industry validation before Prod deployment.
+
+3. LEAP-6550 – Create Separate DAG Flow for Ad-hoc Job Fetching
+Worked on separating the DAG structure for ad-hoc job execution flows.
+
+These are part of this week's development activities and are in progress.
+
