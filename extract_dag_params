@@ -1,0 +1,82 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime
+import monetdblite  # Use pymonetdb if connecting remotely
+# import pymonetdb
+
+# Sample param passed to DAG as config
+PARAMS = {
+    "source_datasets": [
+        {
+            "business": "tec",
+            "data_source": "pos",
+            "data_state": "p73_ps795",
+            "frequency": "cet",
+            "nav_session_id": "13971976"
+        },
+        {
+            "business": "tec",
+            "data_source": "pos",
+            "data_state": "p69_ps1748",
+            "frequency": "com",
+            "nav_session_id": "13971910"
+        }
+    ]
+}
+
+# The core Python task
+def insert_cross_meta_ind(**kwargs):
+    params = kwargs.get("params", {})
+    datasets = params.get("source_datasets", [])
+
+    rows = []
+
+    for idx, dataset in enumerate(datasets, start=1):
+        business = dataset.get("business")
+        data_source = dataset.get("data_source")
+        frequency = dataset.get("frequency")
+        data_state = dataset.get("data_state")
+
+        print(f"[{idx}] Business: {business}, Data Source: {data_source}, Frequency: {frequency}, Data State: {data_state}")
+        rows.append((business, data_source, frequency, data_state))
+
+    # Connect to MonetDB
+    conn = monetdblite.connect('/path/to/monetdb')  # 🔁 Replace with your actual DB path
+    # conn = pymonetdb.connect(username="monetdb", password="monetdb", hostname="host", database="db")
+
+    cur = conn.cursor()
+
+    # Ensure table exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cross_meta_ind (
+            business STRING,
+            data_source STRING,
+            frequency STRING,
+            data_state STRING
+        )
+    """)
+
+    # Insert dynamically
+    cur.executemany("""
+        INSERT INTO cross_meta_ind (business, data_source, frequency, data_state)
+        VALUES (?, ?, ?, ?)
+    """, rows)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Define DAG
+with DAG(
+    dag_id="cross_meta_ind_loader",
+    start_date=datetime(2023, 1, 1),
+    schedule_interval=None,
+    catchup=False,
+    params=PARAMS
+) as dag:
+
+    load_cross_meta_ind = PythonOperator(
+        task_id='load_cross_meta_ind',
+        python_callable=insert_cross_meta_ind,
+        provide_context=True
+    )
