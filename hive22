@@ -1,0 +1,9 @@
+hive --silent=true --outputformat=tsv2 --showHeader=false -e '
+  set hive.execution.engine=tez;
+  select *
+  from prd_us_npd_pos_cyc_mon.dim_rawretaileritems
+  where retailer_item_id in (
+    select distinct retailer_item_id
+    from prd_us_npd_pos_cyc_mon.mapping_fact_sltransactions
+  )
+' | sed 's/[^\t]\+/\"&\"/g; s/\t/|/g' > /npd/staging/LEAPFROG_EXPORT/CYC_POS_MON/dim_rawretaileritems.csv
