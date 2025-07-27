@@ -1,0 +1,53 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime
+import monetdb.sql
+
+def update_data_state(**kwargs):
+    # Step 1: Get data from DAG config
+    input_list = kwargs['dag_run'].conf.get("update_conditions", [])
+
+    # Step 2: DB connection
+    conn = monetdb.sql.connect(
+        username="monetdb",
+        password="monetdb",
+        hostname="localhost",
+        database="your_database",
+        port=50000
+    )
+    cursor = conn.cursor()
+
+    # Step 3: Loop through each condition and update
+    for cond in input_list:
+        business = cond.get("business", "").upper()
+        data_source = cond.get("data_source", "").upper()
+        frequency = cond.get("frequency", "").upper()
+        data_state = cond.get("data_state", "")
+
+        freq_key = f"{business}_{data_source}_{frequency}"
+
+        print(f"Updating freq: {freq_key}, data_state: {data_state}")
+        cursor.execute("""
+            UPDATE cross_ind_meta 
+            SET data_state = %s 
+            WHERE freq = %s
+        """, (data_state, freq_key))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print("All updates completed.")
+
+# Airflow DAG definition
+with DAG(
+    dag_id="dynamic_monetdb_update",
+    start_date=datetime(2023, 1, 1),
+    schedule_interval=None,
+    catchup=False
+) as dag:
+
+    task_update = PythonOperator(
+        task_id="update_data_state_task",
+        python_callable=update_data_state,
+        provide_context=True
+    )
