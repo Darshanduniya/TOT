@@ -1,0 +1,63 @@
+import sys
+import struct
+import os
+import shutil
+from pyspark.sql import SparkSession
+
+# Create Spark session
+spark = SparkSession.builder.appName("HiveToBinConversion").enableHiveSupport().getOrCreate()
+
+# Parse arguments
+start_week = int(sys.argv[1])
+end_week = int(sys.argv[2])
+schema = sys.argv[3]
+output_base_path = sys.argv[4]
+
+# Ensure output path exists
+os.makedirs(output_base_path, exist_ok=True)
+
+for week in range(start_week, end_week):
+    # 1. Read from Hive
+    df = spark.sql(f"""
+        SELECT DISTINCT b.vg_dim, b.venue_dim_key, CAST(1 AS FLOAT) AS store_weight, 1 AS constant_col
+        FROM {schema}.hlx_wkly_fact_venue_time_apl_opm a
+        JOIN {schema}.vg_venue_mapping b ON a.venue_dim_key = b.venue_dim_key
+        WHERE a.tm_dim_key = '{week}'
+    """)
+
+    # 2. Repartition for parallel writing (tune number)
+    df = df.repartition(10)
+
+    # 3. Define path for temporary binary files
+    temp_path = f"{output_base_path}/tmp_proj_{week}"
+    os.makedirs(temp_path, exist_ok=True)
+
+    # 4. Write binary from each partition
+    def write_partition(partition_index, partition):
+        file_path = f"{temp_path}/part_{partition_index}.bin"
+        with open(file_path, "wb") as f:
+            for row in partition:
+                row_bin = b''
+                for value in row:
+                    if isinstance(value, float):
+                        row_bin += struct.pack('f', value)
+                    elif isinstance(value, int):
+                        row_bin += struct.pack('i', value)
+                f.write(row_bin)
+        return []
+
+    # Assign partition index
+    df.rdd.mapPartitionsWithIndex(write_partition).collect()
+
+    # 5. Merge files
+    final_file_path = f"{output_base_path}/Proj_{week}.bin"
+    with open(final_file_path, "wb") as outfile:
+        for part_file in sorted(os.listdir(temp_path)):
+            with open(os.path.join(temp_path, part_file), "rb") as infile:
+                shutil.copyfileobj(infile, outfile)
+
+    # 6. Clean up temp files
+    shutil.rmtree(temp_path)
+
+# Stop Spark
+spark.stop()
