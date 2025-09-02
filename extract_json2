@@ -1,0 +1,43 @@
+# update_monetdb.py
+import sys
+import json
+import monetdb.sql
+
+def main():
+    # Step 1: Get JSON input from CLI argument
+    input_json = sys.argv[1]
+    input_list = json.loads(input_json)
+
+    # Step 2: DB connection
+    conn = monetdb.sql.connect(
+        username="monetdb",
+        password="monetdb",
+        hostname="localhost",
+        database="your_database",
+        port=50000
+    )
+    cursor = conn.cursor()
+
+    # Step 3: Loop through each condition and update
+    for cond in input_list:
+        business = cond.get("business", "").upper()
+        data_source = cond.get("data_source", "").upper()
+        frequency = cond.get("frequency", "").upper()
+        data_state = cond.get("data_state", "")
+
+        freq_key = f"{business}_{data_source}_{frequency}"
+
+        print(f"Updating freq: {freq_key}, data_state: {data_state}")
+        cursor.execute("""
+            UPDATE cross_ind_meta 
+            SET data_state = %s 
+            WHERE freq = %s
+        """, (data_state, freq_key))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print("All updates completed.")
+
+if __name__ == "__main__":
+    main()
