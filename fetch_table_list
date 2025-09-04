@@ -1,0 +1,99 @@
+import os
+import psycopg2
+from pyspark.sql import SparkSession
+
+# Initialize Spark
+spark = SparkSession.builder.appName("Dynamic_TableList_Update").getOrCreate()
+
+# MonetDB meta connection
+conn = psycopg2.connect(
+    host="localhost",
+    dbname="meta_db",
+    user="monetdb",
+    password="monetdb",
+    port=50000
+)
+cursor = conn.cursor()
+
+# Step 1: Fetch metadata (schema + freq + DB info)
+cursor.execute("""
+    SELECT schema, freq, DB_A, PORT_A, DB_B, PORT_B
+    FROM meta_table
+""")
+meta_rows = cursor.fetchall()
+
+# Step 2: Fetch offline/online stack mapping
+cursor.execute("SELECT industry, offline_mart, online_mart FROM industry_offline")
+stack_rows = cursor.fetchall()
+stack_map = {ind: {"offline": off, "online": on} for ind, off, on in stack_rows}
+
+cursor.close()
+conn.close()
+
+# Default JDBC creds
+default_user = "monetdb"
+default_password = "monetdb"
+
+# Step 3: Loop through each freq
+for schema, freq, db_a, port_a, db_b, port_b in meta_rows:
+    # Decide whether to use offline_mart or online_mart
+    mart_type = "offline" if schema == "TEC_POS_TOT" else "online"
+    mart_value = stack_map[freq][mart_type]
+
+    # Pick correct DB/PORT
+    if mart_value.upper() == "A":
+        db_name, port = db_a, port_a
+    else:
+        db_name, port = db_b, port_b
+
+    jdbc_url = f"jdbc:monetdb://localhost:{port}/{db_name}"
+    print(f"[{freq}] Schema={schema}, using {mart_type} stack={mart_value}, DB={db_name}, Port={port}")
+
+    # Step 4: Read query file
+    query_file = f"/tkd/abc/{freq}/get_table_list.sql"
+    if not os.path.exists(query_file):
+        print(f"❌ SQL file missing: {query_file}, skipping...")
+        continue
+
+    with open(query_file, "r") as f:
+        query_sql = f.read().strip()
+    if not query_sql:
+        print(f"❌ SQL file empty for {freq}, skipping...")
+        continue
+
+    # Step 5: Execute query via Spark JDBC
+    df = spark.read.format("jdbc") \
+        .option("url", jdbc_url) \
+        .option("dbtable", f"({query_sql}) as tbls") \
+        .option("user", default_user) \
+        .option("password", default_password) \
+        .load()
+
+    tables = [row[0] for row in df.collect()]
+    table_list_str = ",".join(tables)
+
+    # Step 6: Save output to file
+    output_file = f"/tkd/abc/{freq.lower()}_table_list.txt"
+    with open(output_file, "w") as f:
+        f.write(table_list_str)
+    print(f"✅ Saved table list for {freq} → {output_file}")
+
+    # Step 7: Update meta_table.table_list
+    conn = psycopg2.connect(
+        host="localhost",
+        dbname="meta_db",
+        user="monetdb",
+        password="monetdb",
+        port=50000
+    )
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE meta_table
+        SET table_list = %s
+        WHERE freq = %s AND schema = %s
+    """, (table_list_str, freq, schema))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+spark.stop()
